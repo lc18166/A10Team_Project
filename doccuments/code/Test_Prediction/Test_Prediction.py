@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-@author: CodingAccount
+@author: Bailey Bruce
 """
 import csv 
 import numpy as np # Numpy is a library used in array computing
