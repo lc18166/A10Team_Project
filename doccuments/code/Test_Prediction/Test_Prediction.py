@@ -1,277 +1,165 @@
 # -*- coding: utf-8 -*-
-#Majority of code taken from kernel at https://www.kaggle.com/dgawlik/house-prices-eda
-#Modifications by Luke Cotton
+"""
+@author: CodingAccount
+"""
+import csv 
+import numpy as np # Numpy is a library used in array computing
+import pandas as pd # Pandas is a library which provide a data structure to store and present data in a 
+# tabular format
+import matplotlib.pyplot as plt # This is a plotting library used for data visualising
+import seaborn as sns # seaborn is another data visualising library used in statistical plotting
+from scipy.stats import skew # Used to provide functions to compute the skewness of a data set and 
+import sklearn.linear_model as linear_model # Linear_model is a library containing various linear models
 
-#%matplotlib inline
-import csv
-import numpy as np
-import pandas as pd 
-import matplotlib.pyplot as plt
-import scipy.stats as st
-import sklearn.linear_model as linear_model
-import seaborn as sns
-from sklearn.manifold import TSNE
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+import warnings
+def ignore_warn(*args, **kwargs):
+    pass
+warnings.warn = ignore_warn #ignore annoying warning (from sklearn and seaborn)
 
-pd.options.display.max_rows = 1000
-pd.options.display.max_columns = 20
+pd.options.display.max_rows = 1000 # this limits the number of rows displayed to be at most 1000
+pd.options.display.max_columns = 20# this limits the number of columns displayed to be at most 20
+pd.set_option('display.float_format', lambda x: '{:.3f}'.format(x)) #Limiting floats output to 3 decimal points
 
-train = pd.read_csv('input/train.csv')
-test = pd.read_csv('input/test.csv')
-
-quantitative = [f for f in train.columns if train.dtypes[f] != 'object']
-quantitative.remove('SalePrice')
-quantitative.remove('Id')
-qualitative = [f for f in train.columns if train.dtypes[f] == 'object']
-
+# Loading the training and testing data
+train = pd.read_csv('train.csv')
+test = pd.read_csv('test.csv')
+# Store the number of records in both training and test data
+ntrain = train.shape[0]
 y = train['SalePrice']
 
-test_normality = lambda x: st.shapiro(x.fillna(0))[1] < 0.01
-normal = pd.DataFrame(train[quantitative])
-normal = normal.apply(test_normality)
+#Combining the training and testing data in order to preprocess the data
+all_data = pd.concat((train, test)).reset_index(drop=True)
+all_data.drop(['SalePrice'], axis=1, inplace=True)
+#Checking for missing data
+all_data_na = (train.isnull().sum() / len(train)) * 100
+all_data_na = all_data_na.drop(all_data_na[all_data_na == 0].index).sort_values(ascending=False)
+missing_data = pd.DataFrame({'Missing Ratio' :all_data_na})
+print(missing_data)
 
-f = pd.melt(train, value_vars=quantitative)
+#Visualising the missing data using a bar plot
+f, ax = plt.subplots(figsize=(15, 12))
+plt.xticks(rotation='90')
+sns.barplot(x=all_data_na.index, y=all_data_na)
+plt.xlabel('Features', fontsize=15)
+plt.ylabel('Percent of missing values', fontsize=15)
+plt.title('Percent missing data by feature', fontsize=15)
 
-for c in qualitative:
-    train[c] = train[c].astype('category')
-    if train[c].isnull().any():
-        train[c] = train[c].cat.add_categories(['MISSING'])
-        train[c] = train[c].fillna('MISSING')
+# Replaces null values in qualitative features where it most likely means the house does not have this feature 
+# with the string 'None' 
+cols = ['GarageType', 'GarageFinish', 'GarageQual', 'GarageCond','PoolQC','MiscFeature','Alley','Fence','BsmtQual', 'BsmtCond', 'BsmtExposure','FireplaceQu','MasVnrType','MSSubClass']
+all_data[cols] = all_data[cols].fillna('None')
+# Replaces null values in Lot Frontage with the median lot frontage in that neighbourhood
+all_data["LotFrontage"] = all_data.groupby("Neighborhood")["LotFrontage"].transform(
+    lambda x: x.fillna(x.median()))
+# Replaces null values in quantitative features where it most likely means the house does not have this feature
+# with the value 0
+cols = ['GarageYrBlt', 'GarageArea', 'BsmtFinType1', 'BsmtFinType2', 'GarageCars','BsmtFinSF1', 'BsmtFinSF2', 'BsmtUnfSF','TotalBsmtSF', 'BsmtFullBath', 'BsmtHalfBath','MasVnrArea']
+all_data[cols] = all_data[cols].fillna(0)
 
-def boxplot(x, y, **kwargs):
-    sns.boxplot(x=x, y=y)
-    x=plt.xticks(rotation=90)
-f = pd.melt(train, id_vars=['SalePrice'], value_vars=qualitative)
+all_data["Functional"] = all_data["Functional"].fillna("Typ")
+# Replaces the null values for features in which these details were missed out, with the value most frequently used
+for col in ('Electrical','KitchenQual','Exterior1st','Exterior2nd','SaleType', 'MSZoning'):
+    all_data[col] = all_data[col].fillna(all_data[col].mode()[0])
+# Utilities has only one differing value therefore it can be dropped   
+all_data = all_data.drop(['Utilities'], axis=1)
 
-def anova(frame):
-    anv = pd.DataFrame()
-    anv['feature'] = qualitative
-    pvals = []
-    for c in qualitative:
-        samples = []
-        for cls in frame[c].unique():
-            s = frame[frame[c] == cls]['SalePrice'].values
-            samples.append(s)
-        pval = st.f_oneway(*samples)[1]
-        pvals.append(pval)
-    anv['pval'] = pvals
-    return anv.sort_values('pval')
+#A repeat check for missing data to ensure there is no missing data left
+all_data_na = (all_data.isnull().sum() / len(all_data)) * 100
+all_data_na = all_data_na.drop(all_data_na[all_data_na == 0].index).sort_values(ascending=False)
+missing_data = pd.DataFrame({'Missing Ratio' :all_data_na})
+missing_data.head()
 
-a = anova(train)
-a['disparity'] = np.log(1./a['pval'].values)
-
-
-def encode(frame, feature):
-    ordering = pd.DataFrame()
-    ordering['val'] = frame[feature].unique()
-    ordering.index = ordering.val
-    if 'SalePrice' in frame.keys():
-        ordering['spmean'] = frame[[feature, 'SalePrice']].groupby(feature).mean()['SalePrice']
-    else: #Use different value than 'SalePrice' in the 'test' data set since 'SalePrice' doesn't exist in 'test'
-        ordering['spmean'] = frame[[feature, 'LotArea']].groupby(feature).mean()['LotArea']
-        ordering = ordering.sort_values('spmean')
-    ordering['ordering'] = range(1, ordering.shape[0]+1)
-    ordering = ordering['ordering'].to_dict()
-
-    for cat, o in ordering.items():
-        frame.loc[frame[feature] == cat, feature+'_E'] = o
-    
-qual_encoded = []
-for q in qualitative:  
-    encode(train, q)
-    encode(test, q) #Also encode the qualitative attributes in the 'test' data set
-    qual_encoded.append(q+'_E')
-
-def spearman(frame, features):
-    spr = pd.DataFrame()
-    spr['feature'] = features
-    spr['spearman'] = [frame[f].corr(frame['SalePrice'], 'spearman') for f in features]
-    spr = spr.sort_values('spearman')
-    
-features = quantitative + qual_encoded
-spearman(train, features)
+# Changing some numerical values into a qualitative value so that it can be treated as a categorical variable
+# Applying the string casting function to the MSSubClass variable
+all_data['MSSubClass'] = all_data['MSSubClass'].apply(str)
 
 
-corr = train[quantitative+['SalePrice']].corr()
-corr = train[qual_encoded+['SalePrice']].corr()
-corr = pd.DataFrame(np.zeros([len(quantitative)+1, len(qual_encoded)+1]), index=quantitative+['SalePrice'], columns=qual_encoded+['SalePrice'])
-        
-
-def pairplot(x, y, **kwargs):
-    ax = plt.gca()
-    ts = pd.DataFrame({'time': x, 'val': y})
-    ts = ts.groupby('time').mean()
-    ts.plot(ax=ax)
-    plt.xticks(rotation=90)
-    
-f = pd.melt(train, id_vars=['SalePrice'], value_vars=quantitative+qual_encoded)
-
-features = quantitative
-
-standard = train[train['SalePrice'] < 200000]
-pricey = train[train['SalePrice'] >= 200000]
-
-diff = pd.DataFrame()
-diff['feature'] = features
-diff['difference'] = [(pricey[f].fillna(0.).mean() - standard[f].fillna(0.).mean())/(standard[f].fillna(0.).mean())
-                      for f in features]
+#Changing OverallCond into a categorical variable
+all_data['OverallCond'] = all_data['OverallCond'].astype(str)
 
 
-features = quantitative + qual_encoded
-model = TSNE(n_components=2, random_state=0, perplexity=50)
-X = train[features].fillna(0.).values
-tsne = model.fit_transform(X)
+#Year and month sold are transformed into categorical features.
+all_data['YrSold'] = all_data['YrSold'].astype(str)
+all_data['MoSold'] = all_data['MoSold'].astype(str)
 
-std = StandardScaler()
-s = std.fit_transform(X)
-pca = PCA(n_components=30)
-pca.fit(s)
-pc = pca.transform(s)
-kmeans = KMeans(n_clusters=5)
-kmeans.fit(pc)
+# Implementing a Label Encoder to process categorical features so that it can be inluded in the regression
+from sklearn.preprocessing import LabelEncoder
+cols = ('FireplaceQu', 'BsmtQual', 'BsmtCond', 'GarageQual', 'GarageCond', 
+        'ExterQual', 'ExterCond','HeatingQC', 'PoolQC', 'KitchenQual', 'BsmtFinType1', 
+        'BsmtFinType2', 'Functional', 'Fence', 'BsmtExposure', 'GarageFinish', 'LandSlope',
+        'LotShape', 'PavedDrive', 'Street', 'Alley', 'CentralAir', 'MSSubClass', 'OverallCond', 
+        'YrSold', 'MoSold')
+# process columns, apply LabelEncoder to categorical features
+for c in cols:
+    lbl = LabelEncoder() 
+    lbl.fit(list(all_data[c].values)) 
+    all_data[c] = lbl.transform(list(all_data[c].values))
 
-fr = pd.DataFrame({'tsne1': tsne[:,0], 'tsne2': tsne[:, 1], 'cluster': kmeans.labels_})
+# prints the shape of the data        
+print('Shape all_data: {}'.format(all_data.shape))
+
+# Creating a new variable to record the total area of space in the house as this is an important feature to consider when purchasing a house
+all_data['TotalSF'] = all_data['TotalBsmtSF'] + all_data['1stFlrSF'] + all_data['2ndFlrSF']
+
+# numeric_feats holds the numerical features
+numeric_feats = all_data.dtypes[all_data.dtypes != "object"].index
+
+# Check the skew of all numerical features
+skewed_feats = all_data[numeric_feats].apply(lambda x: skew(x.dropna())).sort_values(ascending=False)
+print("\nSkew in numerical features: \n")
+skewness = pd.DataFrame({'Skew' :skewed_feats})
+skewness.head(10)
+
+# numeric_feats holds the numerical features
+numeric_feats = all_data.dtypes[all_data.dtypes != "object"].index
+
+# Check the skew of all numerical features
+skewed_feats = all_data[numeric_feats].apply(lambda x: skew(x.dropna())).sort_values(ascending=False)
+print("\nSkew in numerical features: \n")
+skewness = pd.DataFrame({'Skew' :skewed_feats})
+skewness.head(10)
+
+# Retrieves the features which have a skewness larger than 0.75 or less than -0.75
+skewness = skewness[abs(skewness) > 0.75]
+print("There are {} skewed numerical features to Box Cox transform".format(skewness.shape[0]))
+
+# The box cox transformation is then applied to these features in the combined data set
+from scipy.special import boxcox1p
+skewed_features = skewness.index
+lam = 0.15
+for feat in skewed_features:
+    all_data[feat] = boxcox1p(all_data[feat], lam)
+
+# Adds dummy columns for categorical variables to indicates its value with a1 in that column
+all_data = pd.get_dummies(all_data)
+print(all_data.shape)
+
+# Split the data back into training and testing data now that it has been preprocess
+train = all_data[:ntrain]
+test = all_data[ntrain:]
 
 
-y = train['SalePrice'].values
-def johnson(y):
-    gamma, eta, epsilon, lbda = st.johnsonsu.fit(y)
-    yt = gamma + eta*np.arcsinh((y-epsilon)/lbda)
-    return yt, gamma, eta, epsilon, lbda
-
-def johnson_inverse(y, gamma, eta, epsilon, lbda):
-    return lbda*np.sinh((y-gamma)/eta) + epsilon
-
-yt, g, et, ep, l = johnson(y)
-yt2 = johnson_inverse(yt, g, et, ep, l)
-
-
+# Defining a function which returns the root-square mean error of the 2 sets of data passed into the function
 def error(actual, predicted):
     actual = np.log(actual)
     predicted = np.log(predicted)
     return np.sqrt(np.sum(np.square(actual-predicted))/len(actual))
 
-def log_transform(feature):
-    train[feature] = np.log1p(train[feature].values)
-    test[feature] = np.log1p(test[feature].values) #Transform values in 'test' data set alongside those in the 'train' data set
-
-def quadratic(feature):
-    train[feature+'2'] = train[feature]**2
-    test[feature+'2'] = test[feature]**2
-    
-log_transform('GrLivArea')
-log_transform('1stFlrSF')
-log_transform('2ndFlrSF')
-log_transform('TotalBsmtSF')
-log_transform('LotArea')
-log_transform('LotFrontage')
-log_transform('KitchenAbvGr')
-log_transform('GarageArea')
-
-quadratic('OverallQual')
-quadratic('YearBuilt')
-quadratic('YearRemodAdd')
-quadratic('TotalBsmtSF')
-quadratic('2ndFlrSF')
-quadratic('Neighborhood_E')
-quadratic('RoofMatl_E')
-quadratic('GrLivArea')
-
-qdr = ['OverallQual2', 'YearBuilt2', 'YearRemodAdd2', 'TotalBsmtSF2',
-        '2ndFlrSF2', 'Neighborhood_E2', 'RoofMatl_E2', 'GrLivArea2']
-
-train['HasBasement'] = train['TotalBsmtSF'].apply(lambda x: 1 if x > 0 else 0)
-train['HasGarage'] = train['GarageArea'].apply(lambda x: 1 if x > 0 else 0)
-train['Has2ndFloor'] = train['2ndFlrSF'].apply(lambda x: 1 if x > 0 else 0)
-train['HasMasVnr'] = train['MasVnrArea'].apply(lambda x: 1 if x > 0 else 0)
-train['HasWoodDeck'] = train['WoodDeckSF'].apply(lambda x: 1 if x > 0 else 0)
-train['HasPorch'] = train['OpenPorchSF'].apply(lambda x: 1 if x > 0 else 0)
-train['HasPool'] = train['PoolArea'].apply(lambda x: 1 if x > 0 else 0)
-train['IsNew'] = train['YearBuilt'].apply(lambda x: 1 if x > 2000 else 0)
-
-test['HasBasement'] = test['TotalBsmtSF'].apply(lambda x: 1 if x > 0 else 0)
-test['HasGarage'] = test['GarageArea'].apply(lambda x: 1 if x > 0 else 0)
-test['Has2ndFloor'] = test['2ndFlrSF'].apply(lambda x: 1 if x > 0 else 0)
-test['HasMasVnr'] = test['MasVnrArea'].apply(lambda x: 1 if x > 0 else 0)
-test['HasWoodDeck'] = test['WoodDeckSF'].apply(lambda x: 1 if x > 0 else 0)
-test['HasPorch'] = test['OpenPorchSF'].apply(lambda x: 1 if x > 0 else 0)
-test['HasPool'] = test['PoolArea'].apply(lambda x: 1 if x > 0 else 0)
-test['IsNew'] = test['YearBuilt'].apply(lambda x: 1 if x > 2000 else 0)
-
-boolean = ['HasBasement', 'HasGarage', 'Has2ndFloor', 'HasMasVnr', 'HasWoodDeck',
-            'HasPorch', 'HasPool', 'IsNew']
-
-
-features = quantitative + qual_encoded + boolean + qdr
+#Instantiates and initialises the Lasso model with a maximum number of iterations at 10000 and 3 folds for the cross validation technique
 lasso = linear_model.LassoLarsCV(max_iter=10000,cv=3)
-houseFeats = train[features].fillna(0.).values
-housePrices = train['SalePrice'].values
+
+# This then fits the model using the house features and house prices provided in the training data
+houseFeats = train[train.columns]
+housePrices = y
 lasso.fit(houseFeats, np.log(housePrices))
-
+# The model is then used to predict house prices using the training data
 pricePred = np.exp(lasso.predict(houseFeats))
-error(housePrices, pricePred)
+# The error is displayed using the error function defined previously
+print('LassoCV:',error(housePrices, pricePred))
 
-
-import patsy
-
-housePrices, houseFeats = patsy.dmatrices(
-    "SalePrice ~ \
-        GarageCars + \
-        np.log1p(BsmtFinSF1) + \
-        ScreenPorch + \
-        Condition1_E + \
-        Condition2_E + \
-        WoodDeckSF + \
-        np.log1p(LotArea) + \
-        Foundation_E + \
-        MSZoning_E + \
-        MasVnrType_E + \
-        HouseStyle_E + \
-        Fireplaces + \
-        CentralAir_E + \
-        BsmtFullBath + \
-        EnclosedPorch + \
-        PavedDrive_E + \
-        ExterQual_E + \
-        bs(OverallCond, df=7, degree=1) + \
-        bs(MSSubClass, df=7, degree=1) + \
-        bs(LotArea, df=2, degree=1) + \
-        bs(FullBath, df=3, degree=1) + \
-        bs(HalfBath, df=2, degree=1) + \
-        bs(BsmtFullBath, df=3, degree=1) + \
-        bs(TotRmsAbvGrd, df=2, degree=1) + \
-        bs(LandSlope_E, df=2, degree=1) + \
-        bs(LotConfig_E, df=2, degree=1) + \
-        bs(SaleCondition_E, df=3, degree=1) + \
-        OverallQual + np.square(OverallQual) + \
-        GrLivArea + np.square(GrLivArea) + \
-        Q('1stFlrSF') + np.square(Q('1stFlrSF')) + \
-        Q('2ndFlrSF') + np.square(Q('2ndFlrSF')) +  \
-        TotalBsmtSF + np.square(TotalBsmtSF) +  \
-        KitchenAbvGr + np.square(KitchenAbvGr) +  \
-        YearBuilt + np.square(YearBuilt) + \
-        Neighborhood_E + np.square(Neighborhood_E) + \
-        Neighborhood_E:OverallQual + \
-        MSSubClass:BldgType_E + \
-        ExterQual_E:OverallQual + \
-        PoolArea:PoolQC_E + \
-        Fireplaces:FireplaceQu_E + \
-        OverallQual:KitchenQual_E + \
-        GarageQual_E:GarageCond + \
-        GarageArea:GarageCars + \
-        Q('1stFlrSF'):TotalBsmtSF + \
-        TotRmsAbvGrd:GrLivArea",
-    train.to_dict('list'))
-
-ridge = linear_model.RidgeCV(cv=10)
-ridge.fit(houseFeats, np.log(housePrices))
-pricePred = np.exp(ridge.predict(houseFeats))
-print(error(housePrices,pricePred))
-
-
-testHouseFeats = test[features].fillna(0.).values
+# The house prices are then predicted for the test data using the model and the results are formatted into a csv.
+# This csv can then be submitted to the kaggle competition
+testHouseFeats = test[test.columns]
 pricePred = np.exp(lasso.predict(testHouseFeats))
 with open ('test_predictions.csv','w',newline='') as csvfile:
     writer = csv.writer(csvfile,delimiter=',',
@@ -279,4 +167,7 @@ with open ('test_predictions.csv','w',newline='') as csvfile:
     writer.writerow(['Id', 'SalePrice'])
     for i in range(1461,len(pricePred)+1461):
         writer.writerow([i,pricePred[i-1461]])
-    
+
+
+
+
